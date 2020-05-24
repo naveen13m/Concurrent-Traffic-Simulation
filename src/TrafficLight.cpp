@@ -1,39 +1,53 @@
 #include <iostream>
 #include <random>
+#include <thread>
+#include <mutex>
+#include <future>
 #include "TrafficLight.h"
 
 /* Implementation of class "MessageQueue" */
 
-/* 
+
 template <typename T>
 T MessageQueue<T>::receive()
 {
-    // FP.5a : The method receive should use std::unique_lock<std::mutex> and _condition.wait() 
-    // to wait for and receive new messages and pull them from the queue using move semantics. 
-    // The received object should then be returned by the receive function. 
+    std::unique_lock<std::mutex> lg(_mtx); // lock guard does not work
+    _cv.wait(lg, [this] { return !_queue.empty();});
+    T msg = std::move(_queue.back());
+    _queue.pop_back();
+    return msg;
 }
 
 template <typename T>
 void MessageQueue<T>::send(T &&msg)
 {
-    // FP.4a : The method send should use the mechanisms std::lock_guard<std::mutex> 
-    // as well as _condition.notify_one() to add a new message to the queue and afterwards send a notification.
+    std::lock_guard<std::mutex> lg(_mtx);
+    _queue.emplace_back(std::move(msg));
+    _cv.notify_one();
+//    lg.unlock();
 }
-*/
 
 /* Implementation of class "TrafficLight" */
 
-/* 
+
 TrafficLight::TrafficLight()
 {
     _currentPhase = TrafficLightPhase::red;
+    _queue = std::make_shared<MessageQueue<TrafficLightPhase>>();
+}
+
+TrafficLight::~TrafficLight()
+{
+
 }
 
 void TrafficLight::waitForGreen()
 {
-    // FP.5b : add the implementation of the method waitForGreen, in which an infinite while-loop 
-    // runs and repeatedly calls the receive function on the message queue. 
-    // Once it receives TrafficLightPhase::green, the method returns.
+    while (true) {
+        if (TrafficLightPhase::green == _queue->receive()) {
+            return;
+        }
+    }
 }
 
 TrafficLightPhase TrafficLight::getCurrentPhase()
@@ -43,16 +57,38 @@ TrafficLightPhase TrafficLight::getCurrentPhase()
 
 void TrafficLight::simulate()
 {
-    // FP.2b : Finally, the private method „cycleThroughPhases“ should be started in a thread when the public method „simulate“ is called. To do this, use the thread queue in the base class. 
+    std::thread temp(&TrafficLight::cycleThroughPhases, this);
+    threads.emplace_back(std::move(temp));
 }
 
-// virtual function which is executed in a thread
-void TrafficLight::cycleThroughPhases()
+[[noreturn]] void TrafficLight::cycleThroughPhases()
 {
-    // FP.2a : Implement the function with an infinite loop that measures the time between two loop cycles 
-    // and toggles the current phase of the traffic light between red and green and sends an update method 
-    // to the message queue using move semantics. The cycle duration should be a random value between 4 and 6 seconds. 
-    // Also, the while-loop should use std::this_thread::sleep_for to wait 1ms between two cycles. 
-}
+    const float max_cycle_duration = 6.0;
+    const float min_cycle_duration = 4.0;
+    const float duration_range = max_cycle_duration - min_cycle_duration;
+    auto prev_time = std::chrono::system_clock::now();
+    std::chrono::duration<double> diff_time = static_cast <std::chrono::duration<double>> (0.0);
+    auto curr_time = std::chrono::system_clock::now();
 
-*/
+    while (true) {
+        float curr_cycle_duration;
+        curr_cycle_duration = min_cycle_duration +
+                static_cast <float> (rand()) /( static_cast <float> (RAND_MAX/duration_range));
+//        curr_cycle_duration = 4.0;
+
+        while (diff_time.count() < curr_cycle_duration) {
+            curr_time = std::chrono::system_clock::now();
+            diff_time = curr_time - prev_time;
+            std::this_thread::sleep_for(std::chrono::milliseconds (1));
+        }
+
+        // fill the message queue
+        // Start a thread with async
+        _currentPhase = TrafficLightPhase::green == _currentPhase ? TrafficLightPhase::red : TrafficLightPhase::green;
+        auto msg = _currentPhase;
+        auto ftr = std::async(std::launch::async, &MessageQueue<TrafficLightPhase>::send, _queue, std::move(msg));
+        ftr.wait();
+        prev_time = curr_time;
+        diff_time = curr_time - prev_time;
+    }
+}
